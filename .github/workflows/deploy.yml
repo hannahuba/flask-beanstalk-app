@@ -9,6 +9,7 @@ env:
   AWS_REGION: eu-west-1
   EB_APPLICATION_NAME: cmtr-a6jp15cu-app
   EB_ENVIRONMENT_NAME: cmtr-a6jp15cu-env
+  EB_S3_BUCKET: elasticbeanstalk-us-east-1-343218215483
 
 jobs:
   deploy:
@@ -39,17 +40,7 @@ jobs:
           echo "APP_VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "Deploying version: ${VERSION}"
 
-      # ── 4. Get S3 Bucket Name ─────────────────────────────
-      - name: Get S3 bucket name
-        id: s3bucket
-        run: |
-          ACCOUNT_ID=$(aws sts get-caller-identity \
-            --query Account --output text)
-          BUCKET="elasticbeanstalk-${AWS_REGION}-${ACCOUNT_ID}"
-          echo "BUCKET_NAME=${BUCKET}" >> $GITHUB_OUTPUT
-          echo "Using S3 bucket: ${BUCKET}"
-
-      # ── 5. Create Deployment ZIP ──────────────────────────
+      # ── 4. Create Deployment ZIP ──────────────────────────
       - name: Create deployment package
         run: |
           zip -r deploy-package.zip . \
@@ -57,21 +48,20 @@ jobs:
             --exclude ".github/*" \
             --exclude "*.md"
           echo "Package size: $(du -sh deploy-package.zip)"
-          echo "Package contents:"
-          unzip -l deploy-package.zip
 
-      # ── 6. Upload ZIP to S3 ───────────────────────────────
+      # ── 5. Upload ZIP to S3 ───────────────────────────────
       - name: Upload package to S3
         run: |
           S3_KEY="deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip"
-          echo "Uploading to: s3://${{ steps.s3bucket.outputs.BUCKET_NAME }}/${S3_KEY}"
+          echo "Uploading to: s3://${{ env.EB_S3_BUCKET }}/${S3_KEY}"
           
           aws s3 cp deploy-package.zip \
-            "s3://${{ steps.s3bucket.outputs.BUCKET_NAME }}/${S3_KEY}"
+            "s3://${{ env.EB_S3_BUCKET }}/${S3_KEY}" \
+            --region us-east-1
           
           echo "✅ Uploaded successfully"
 
-      # ── 7. Create EB Application Version ─────────────────
+      # ── 6. Create EB Application Version ─────────────────
       - name: Create Elastic Beanstalk application version
         run: |
           S3_KEY="deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip"
@@ -80,13 +70,13 @@ jobs:
             --application-name "${{ env.EB_APPLICATION_NAME }}" \
             --version-label "${{ steps.version.outputs.APP_VERSION }}" \
             --source-bundle \
-              "S3Bucket=${{ steps.s3bucket.outputs.BUCKET_NAME }},S3Key=${S3_KEY}" \
+              "S3Bucket=${{ env.EB_S3_BUCKET }},S3Key=${S3_KEY}" \
             --description "Run #${{ github.run_number }}" \
             --region "${{ env.AWS_REGION }}"
           
-          echo "✅ Application version created: ${{ steps.version.outputs.APP_VERSION }}"
+          echo "✅ Application version created"
 
-      # ── 8. Deploy to EB Environment ───────────────────────
+      # ── 7. Deploy to EB Environment ───────────────────────
       - name: Deploy to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
@@ -97,7 +87,7 @@ jobs:
           
           echo "✅ Deployment triggered"
 
-      # ── 9. Wait for Environment Ready ─────────────────────
+      # ── 8. Wait for Environment Ready ─────────────────────
       - name: Wait for deployment to complete
         run: |
           echo "Polling environment status..."
@@ -135,7 +125,7 @@ jobs:
             exit 1
           fi
 
-      # ── 10. Verify Application ────────────────────────────
+      # ── 9. Verify Application ────────────────────────────
       - name: Verify deployment
         run: |
           ENV_URL=$(aws elasticbeanstalk describe-environments \
@@ -164,7 +154,7 @@ jobs:
             exit 1
           fi
 
-      # ── 11. Print Summary ─────────────────────────────────
+      # ── 10. Print Summary ─────────────────────────────────
       - name: Deployment summary
         if: success()
         run: |
