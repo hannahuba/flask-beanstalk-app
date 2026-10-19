@@ -6,7 +6,7 @@ on:
       - main
 
 env:
-  AWS_REGION: eu-west-1
+  AWS_REGION: us-east-1
   EB_APPLICATION_NAME: cmtr-a6jp15cu-app
   EB_ENVIRONMENT_NAME: cmtr-a6jp15cu-env
   EB_S3_BUCKET: elasticbeanstalk-us-east-1-343218215483
