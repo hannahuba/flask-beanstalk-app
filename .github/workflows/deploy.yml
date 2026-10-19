@@ -28,13 +28,14 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region: ${{ env.AWS_REGION }}
 
-      # ── 3. Set Version Label ───────────────────────────────
+      # ── 3. Set Short Version Label ────────────────────────
       - name: Set deployment version
         id: version
         run: |
-          VERSION="v-${{ github.run_number }}-${{ github.sha }}"
-          # Trim to 100 chars max (EB limit)
-          VERSION="${VERSION:0:100}"
+          # Short SHA (7 chars) + run number = short and unique
+          SHORT_SHA="${{ github.sha }}"
+          SHORT_SHA="${SHORT_SHA:0:7}"
+          VERSION="v${{ github.run_number }}-${SHORT_SHA}"
           echo "APP_VERSION=${VERSION}" >> $GITHUB_OUTPUT
           echo "Deploying version: ${VERSION}"
 
@@ -42,7 +43,9 @@ jobs:
       - name: Get S3 bucket name
         id: s3bucket
         run: |
-          BUCKET="elasticbeanstalk-${{ env.AWS_REGION }}-${{ secrets.AWS_ACCOUNT_ID }}"
+          ACCOUNT_ID=$(aws sts get-caller-identity \
+            --query Account --output text)
+          BUCKET="elasticbeanstalk-${AWS_REGION}-${ACCOUNT_ID}"
           echo "BUCKET_NAME=${BUCKET}" >> $GITHUB_OUTPUT
           echo "Using S3 bucket: ${BUCKET}"
 
@@ -54,34 +57,44 @@ jobs:
             --exclude ".github/*" \
             --exclude "*.md"
           echo "Package size: $(du -sh deploy-package.zip)"
+          echo "Package contents:"
+          unzip -l deploy-package.zip
 
       # ── 6. Upload ZIP to S3 ───────────────────────────────
       - name: Upload package to S3
         run: |
+          S3_KEY="deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip"
+          echo "Uploading to: s3://${{ steps.s3bucket.outputs.BUCKET_NAME }}/${S3_KEY}"
+          
           aws s3 cp deploy-package.zip \
-            s3://${{ steps.s3bucket.outputs.BUCKET_NAME }}/github-deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip
-          echo "✅ Uploaded to S3"
+            "s3://${{ steps.s3bucket.outputs.BUCKET_NAME }}/${S3_KEY}"
+          
+          echo "✅ Uploaded successfully"
 
       # ── 7. Create EB Application Version ─────────────────
       - name: Create Elastic Beanstalk application version
         run: |
+          S3_KEY="deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip"
+          
           aws elasticbeanstalk create-application-version \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
             --version-label "${{ steps.version.outputs.APP_VERSION }}" \
             --source-bundle \
-              S3Bucket=${{ steps.s3bucket.outputs.BUCKET_NAME }},S3Key=github-deployments/deploy-${{ steps.version.outputs.APP_VERSION }}.zip \
-            --description "GitHub Actions Run #${{ github.run_number }}" \
-            --region ${{ env.AWS_REGION }}
-          echo "✅ Application version created"
+              "S3Bucket=${{ steps.s3bucket.outputs.BUCKET_NAME }},S3Key=${S3_KEY}" \
+            --description "Run #${{ github.run_number }}" \
+            --region "${{ env.AWS_REGION }}"
+          
+          echo "✅ Application version created: ${{ steps.version.outputs.APP_VERSION }}"
 
       # ── 8. Deploy to EB Environment ───────────────────────
       - name: Deploy to Elastic Beanstalk
         run: |
           aws elasticbeanstalk update-environment \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
-            --environment-name ${{ env.EB_ENVIRONMENT_NAME }} \
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --environment-name "${{ env.EB_ENVIRONMENT_NAME }}" \
             --version-label "${{ steps.version.outputs.APP_VERSION }}" \
-            --region ${{ env.AWS_REGION }}
+            --region "${{ env.AWS_REGION }}"
+          
           echo "✅ Deployment triggered"
 
       # ── 9. Wait for Environment Ready ─────────────────────
@@ -93,16 +106,16 @@ jobs:
 
           while [ $COUNT -lt $MAX ]; do
             STATUS=$(aws elasticbeanstalk describe-environments \
-              --application-name ${{ env.EB_APPLICATION_NAME }} \
-              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-              --region ${{ env.AWS_REGION }} \
+              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
               --query 'Environments[0].Status' \
               --output text)
 
             HEALTH=$(aws elasticbeanstalk describe-environments \
-              --application-name ${{ env.EB_APPLICATION_NAME }} \
-              --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-              --region ${{ env.AWS_REGION }} \
+              --application-name "${{ env.EB_APPLICATION_NAME }}" \
+              --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+              --region "${{ env.AWS_REGION }}" \
               --query 'Environments[0].Health' \
               --output text)
 
@@ -126,22 +139,26 @@ jobs:
       - name: Verify deployment
         run: |
           ENV_URL=$(aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
-            --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-            --region ${{ env.AWS_REGION }} \
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
             --query 'Environments[0].CNAME' \
             --output text)
 
           echo "🌐 App URL: http://${ENV_URL}"
 
-          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" http://${ENV_URL})
+          # Small wait for DNS
+          sleep 5
+
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
+            http://${ENV_URL})
           RESPONSE=$(curl -s http://${ENV_URL})
 
           echo "HTTP Status: ${HTTP_CODE}"
           echo "Response: ${RESPONSE}"
 
           if [ "$HTTP_CODE" = "200" ]; then
-            echo "✅ Deployment verified successfully!"
+            echo "✅ Deployment verified!"
           else
             echo "❌ Verification failed - HTTP ${HTTP_CODE}"
             exit 1
@@ -152,16 +169,19 @@ jobs:
         if: success()
         run: |
           ENV_URL=$(aws elasticbeanstalk describe-environments \
-            --application-name ${{ env.EB_APPLICATION_NAME }} \
-            --environment-names ${{ env.EB_ENVIRONMENT_NAME }} \
-            --region ${{ env.AWS_REGION }} \
+            --application-name "${{ env.EB_APPLICATION_NAME }}" \
+            --environment-names "${{ env.EB_ENVIRONMENT_NAME }}" \
+            --region "${{ env.AWS_REGION }}" \
             --query 'Environments[0].CNAME' \
             --output text)
 
-          echo "## Deployment Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "## 🚀 Deployment Successful!" >> $GITHUB_STEP_SUMMARY
           echo "| Property | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Application | ${{ env.EB_APPLICATION_NAME }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Environment | ${{ env.EB_ENVIRONMENT_NAME }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Version | ${{ steps.version.outputs.APP_VERSION }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Application | ${{ env.EB_APPLICATION_NAME }} |" \
+            >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | ${{ env.EB_ENVIRONMENT_NAME }} |" \
+            >> $GITHUB_STEP_SUMMARY
+          echo "| Version | ${{ steps.version.outputs.APP_VERSION }} |" \
+            >> $GITHUB_STEP_SUMMARY
           echo "| URL | http://${ENV_URL} |" >> $GITHUB_STEP_SUMMARY
