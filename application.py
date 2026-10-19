@@ -2,9 +2,6 @@ from flask import Flask
 
 application = Flask(__name__)
 
-@application.route('/')
-def hello():
-    return "Hello World from Flask on Elastic Beanstalk!"
-
-if __name__ == '__main__':
-    application.run(host='0.0.0.0', port=8080, debug=True)
+@application.route("/")
+def index():
+    return "Hello from ${custom_identifier} Elastic Beanstalk CI-CD"
